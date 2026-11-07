@@ -1,0 +1,9 @@
+streamlit
+tif1
+pandas
+numpy
+matplotlib
+plotly
+requests
+qrcode
+pillow
