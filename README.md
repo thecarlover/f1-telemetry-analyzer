@@ -8,17 +8,20 @@ Designed for both seasoned race engineers and casual motorsport fans, this dashb
 
 ## 🌟 Key Features
 
-### 📡 1. Live Grand Prix Race Control (Powered by OpenF1)
+### 📡 1. Live Grand Prix Race Control (Powered by OpenF1 & Simulation Engine)
 * **Real-Time Timing Tower:** P1–P20 live leaderboard, sector splits ($S1, S2, S3$), gap to leader, intervals between cars, and speed traps.
 * **F1 Cockpit HUD & Steering Wheel:** 
   * 15 RPM LED shift lights (Green $\to$ Red $\to$ Purple upshift cue).
   * Real-time gear indicator ($1$ to $8$, Neutral, Reverse).
   * Dynamic throttle & brake pressure meters.
   * Live DRS status indicator (`DRS OPEN` / `DRS CLOSED`).
-* **Team Radio Audio Streamer:** Listen to official FIA driver-to-engineer broadcast radio clips in real time.
+* **Team Radio Audio Streamer:** Listen to official FIA driver-to-engineer broadcast radio clips in real time with transcript cards.
 * **FIA Stewards & Flag Feed:** Instant alerts for Green, Yellow, Red flags, Safety Cars, and Track Limits notices.
 * **Live Pitwall Weather Station:** Real-time asphalt temperature, ambient temperature, humidity, wind velocity, and rainfall tracking.
 * **⚡ Live Auto-Poll Mode:** Set automatic polling every 10s, 15s, or 30s to keep timing fresh while watching the race.
+* **High-Fidelity Live GP Simulator & Replay Engine:** Built-in multi-circuit replay (Abu Dhabi, Monza, Bahrain) ensures zero downtime for you and your friends when live feeds are restricted or offline.
+* **Multi-User & Mobile Optimized:** Shared caching architecture prevents OpenF1 rate-limiting when multiple friends connect simultaneously.
+* **OpenF1 Authentication Support:** Easily input an OpenF1 Bearer Token or API key directly in the sidebar or via Streamlit secrets to stream authenticated live feeds during Grand Prix sessions.
 
 ### 🏎️ 2. Deep Telemetry & Lap Archives (Powered by tif1)
 * **Driver Comparison Matrix:** Select any two drivers across any Grand Prix weekend (Practice, Qualifying, Sprint, Race).

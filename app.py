@@ -11,6 +11,9 @@ from plotly.subplots import make_subplots
 import requests
 import qrcode
 import tif1
+import math
+import wave
+import struct
 
 # =========================================================
 # PAGE CONFIGURATION & F1 RACE CONTROL STYLING
@@ -718,90 +721,447 @@ def style_plotly_fig(fig):
     return fig
 
 # =========================================================
-# OPENF1 REAL-TIME API CACHED CALLS
+# OPENF1 REAL-TIME API CLIENT & AUTHENTICATION
 # =========================================================
 
 OPENF1_BASE = "https://api.openf1.org/v1"
 
-@st.cache_data(ttl=20, show_spinner=False)
-def fetch_openf1_latest_session():
+def get_openf1_token():
+    """Resolve OpenF1 Bearer Token / API Key from session_state, secrets, or env."""
+    user_tok = st.session_state.get("openf1_user_token")
+    if user_tok and str(user_tok).strip():
+        return str(user_tok).strip()
     try:
-        r = requests.get(f"{OPENF1_BASE}/sessions?session_key=latest", timeout=6)
-        if r.status_code == 200 and r.json():
-            return r.json()[0]
+        if hasattr(st, "secrets"):
+            sec_tok = st.secrets.get("OPENF1_TOKEN") or st.secrets.get("OPENF1_API_KEY")
+            if sec_tok and str(sec_tok).strip():
+                return str(sec_tok).strip()
     except Exception:
         pass
-    return None
+    env_tok = os.environ.get("OPENF1_TOKEN") or os.environ.get("OPENF1_API_KEY")
+    if env_tok and str(env_tok).strip():
+        return str(env_tok).strip()
+    return ""
+
+def get_openf1_headers():
+    token = get_openf1_token()
+    headers = {"Accept": "application/json"}
+    if token:
+        if not token.lower().startswith("bearer "):
+            headers["Authorization"] = f"Bearer {token}"
+        else:
+            headers["Authorization"] = token
+    return headers
+
+def verify_openf1_token(token: str):
+    headers = {"Accept": "application/json"}
+    tok_clean = token.strip()
+    if not tok_clean.lower().startswith("bearer "):
+        headers["Authorization"] = f"Bearer {tok_clean}"
+    else:
+        headers["Authorization"] = tok_clean
+    try:
+        r = requests.get(f"{OPENF1_BASE}/sessions?session_key=latest", headers=headers, timeout=6)
+        if r.status_code == 200:
+            return True, "Token verified! Connected to live OpenF1 feed."
+        elif r.status_code == 401:
+            return False, "OpenF1 rejected the token (HTTP 401 Unauthorized)."
+        elif r.status_code == 429:
+            return False, "OpenF1 rate limit reached (HTTP 429)."
+        else:
+            return False, f"OpenF1 responded with status {r.status_code}."
+    except Exception as e:
+        return False, f"Connection test failed: {str(e)}"
+
+# =========================================================
+# HIGH-FIDELITY LIVE GRAND PRIX SIMULATOR & REPLAY ENGINE
+# =========================================================
+
+SIMULATED_SESSIONS = {
+    "sim_abu_dhabi_2024": {
+        "session_key": "sim_abu_dhabi_2024",
+        "circuit_short_name": "Yas Marina Circuit",
+        "location": "Yas Island",
+        "country_name": "United Arab Emirates",
+        "session_name": "Grand Prix (Season Finale Replay)",
+        "year": 2024,
+        "base_lap_sec": 83.912,
+        "weather": {
+            "track_temperature": 33.4,
+            "air_temperature": 27.5,
+            "humidity": 60,
+            "wind_speed": 3.2,
+            "wind_direction": 205,
+            "rainfall": 0.0
+        }
+    },
+    "sim_monza_2024": {
+        "session_key": "sim_monza_2024",
+        "circuit_short_name": "Autodromo Nazionale Monza",
+        "location": "Monza",
+        "country_name": "Italy",
+        "session_name": "Grand Prix (Temple of Speed Replay)",
+        "year": 2024,
+        "base_lap_sec": 79.620,
+        "weather": {
+            "track_temperature": 42.1,
+            "air_temperature": 31.8,
+            "humidity": 42,
+            "wind_speed": 1.8,
+            "wind_direction": 85,
+            "rainfall": 0.0
+        }
+    },
+    "sim_bahrain_2024": {
+        "session_key": "sim_bahrain_2024",
+        "circuit_short_name": "Bahrain International Circuit",
+        "location": "Sakhir",
+        "country_name": "Bahrain",
+        "session_name": "Grand Prix (Season Opener Replay)",
+        "year": 2024,
+        "base_lap_sec": 90.245,
+        "weather": {
+            "track_temperature": 29.2,
+            "air_temperature": 23.4,
+            "humidity": 65,
+            "wind_speed": 4.1,
+            "wind_direction": 315,
+            "rainfall": 0.0
+        }
+    }
+}
+
+def get_simulated_session_info(session_key: str):
+    key = session_key if session_key in SIMULATED_SESSIONS else "sim_abu_dhabi_2024"
+    return SIMULATED_SESSIONS[key]
+
+@st.cache_data
+def get_team_radio_audio_bytes():
+    buf = io.BytesIO()
+    sample_rate = 22050
+    with wave.open(buf, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        # Tone 1 (1750 Hz chirp)
+        for i in range(int(sample_rate * 0.07)):
+            t = i / sample_rate
+            val = int(24000 * math.sin(2 * math.pi * 1750 * t))
+            wf.writeframes(struct.pack('<h', val))
+        # Silence
+        for i in range(int(sample_rate * 0.03)):
+            wf.writeframes(struct.pack('<h', 0))
+        # Tone 2 (1200 Hz tone)
+        for i in range(int(sample_rate * 0.10)):
+            t = i / sample_rate
+            val = int(24000 * math.sin(2 * math.pi * 1200 * t))
+            wf.writeframes(struct.pack('<h', val))
+    return buf.getvalue()
+
+def get_simulated_drivers(session_key: str = "sim_abu_dhabi_2024"):
+    drivers = [
+        (1, "VER", "Max Verstappen", "Red Bull Racing", "#3671C6"),
+        (4, "NOR", "Lando Norris", "McLaren", "#FF8000"),
+        (16, "LEC", "Charles Leclerc", "Ferrari", "#E80020"),
+        (81, "PIA", "Oscar Piastri", "McLaren", "#FF8000"),
+        (55, "SAI", "Carlos Sainz", "Ferrari", "#E80020"),
+        (63, "RUS", "George Russell", "Mercedes", "#27F4D2"),
+        (44, "HAM", "Lewis Hamilton", "Mercedes", "#27F4D2"),
+        (11, "PER", "Sergio Perez", "Red Bull Racing", "#3671C6"),
+        (14, "ALO", "Fernando Alonso", "Aston Martin", "#229971"),
+        (18, "STR", "Lance Stroll", "Aston Martin", "#229971"),
+        (22, "TSU", "Yuki Tsunoda", "RB", "#6692FF"),
+        (3, "RIC", "Daniel Ricciardo", "RB", "#6692FF"),
+        (23, "ALB", "Alexander Albon", "Williams", "#64C4FF"),
+        (2, "SAR", "Logan Sargeant", "Williams", "#64C4FF"),
+        (27, "HUL", "Nico Hulkenberg", "Haas F1 Team", "#B6BABD"),
+        (20, "MAG", "Kevin Magnussen", "Haas F1 Team", "#B6BABD"),
+        (10, "GAS", "Pierre Gasly", "Alpine", "#0093CC"),
+        (31, "OCO", "Esteban Ocon", "Alpine", "#0093CC"),
+        (77, "BOT", "Valtteri Bottas", "Kick Sauber", "#52E252"),
+        (24, "ZHO", "Guanyu Zhou", "Kick Sauber", "#52E252"),
+    ]
+    return pd.DataFrame(drivers, columns=["driver_number", "name_acronym", "full_name", "team_name", "team_colour"])
+
+def get_simulated_laps(session_key: str = "sim_abu_dhabi_2024", tick: int = 0):
+    sess = get_simulated_session_info(session_key)
+    base_sec = sess.get("base_lap_sec", 83.912)
+    is_monza = "monza" in str(session_key).lower()
+    
+    driver_deltas = [
+        (1, 0.000, 332.8 if not is_monza else 352.4),
+        (4, 0.183, 334.2 if not is_monza else 354.1),
+        (16, 0.308, 331.0 if not is_monza else 351.8),
+        (81, 0.473, 335.1 if not is_monza else 353.6),
+        (55, 0.578, 330.4 if not is_monza else 350.5),
+        (63, 0.703, 329.5 if not is_monza else 349.8),
+        (44, 0.790, 330.2 if not is_monza else 350.2),
+        (11, 0.978, 333.5 if not is_monza else 351.0),
+        (14, 1.168, 328.0 if not is_monza else 348.5),
+        (18, 1.378, 327.4 if not is_monza else 347.8),
+        (22, 1.468, 326.8 if not is_monza else 347.0),
+        (3, 1.583, 326.5 if not is_monza else 346.5),
+        (23, 1.698, 331.9 if not is_monza else 351.2),
+        (2, 1.908, 330.0 if not is_monza else 349.5),
+        (27, 1.998, 327.1 if not is_monza else 348.0),
+        (20, 2.138, 326.2 if not is_monza else 347.1),
+        (10, 2.268, 325.4 if not is_monza else 346.8),
+        (31, 2.378, 325.0 if not is_monza else 346.2),
+        (77, 2.538, 324.2 if not is_monza else 345.5),
+        (24, 2.708, 323.8 if not is_monza else 345.0),
+    ]
+    
+    current_lap = 28 + (tick % 30)
+    rows = []
+    for num, delta, top_spd in driver_deltas:
+        b_time = base_sec + delta
+        s1 = b_time * 0.334
+        s2 = b_time * 0.430
+        s3 = b_time * 0.236
+        
+        for l_offset in range(3):
+            lap_n = max(1, current_lap - l_offset)
+            jitter = (np.sin(num * 7 + lap_n * 3 + tick) * 0.12) if l_offset > 0 else 0
+            rows.append({
+                "driver_number": num,
+                "lap_number": lap_n,
+                "lap_duration": round(b_time + jitter + l_offset * 0.28, 3),
+                "duration_sector_1": round(s1 + jitter * 0.35, 3),
+                "duration_sector_2": round(s2 + jitter * 0.45, 3),
+                "duration_sector_3": round(s3 + jitter * 0.20, 3),
+                "st_speed": round(top_spd + (1.2 if l_offset == 0 else -0.8), 1)
+            })
+    return pd.DataFrame(rows)
+
+def get_simulated_car_data(session_key: str = "sim_abu_dhabi_2024", driver_number: int = 1):
+    num_samples = 360
+    np.random.seed(42 + int(driver_number))
+    base_time = pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=5)
+    
+    is_monza = "monza" in str(session_key).lower()
+    t = np.linspace(0, 1, num_samples)
+    
+    if is_monza:
+        speed = 280 + 65 * np.sin(2 * np.pi * t)
+        for c_pos, min_spd in [(0.15, 78), (0.42, 115), (0.70, 135), (0.92, 165)]:
+            dist = np.abs(t - c_pos)
+            dip = np.exp(- (dist**2) / 0.0018)
+            speed = speed * (1 - dip) + min_spd * dip
+        max_limit = 352
+    else:
+        speed = 235 + 75 * np.sin(2 * np.pi * t) + 25 * np.cos(6 * np.pi * t)
+        for c_pos, min_spd in [(0.12, 85), (0.32, 108), (0.58, 72), (0.82, 125)]:
+            dist = np.abs(t - c_pos)
+            dip = np.exp(- (dist**2) / 0.0022)
+            speed = speed * (1 - dip) + min_spd * dip
+        max_limit = 338
+        
+    speed = np.clip(speed + np.random.normal(0, 1.2, num_samples), 65, max_limit)
+    
+    d_speed = np.gradient(speed)
+    throttle = np.clip((d_speed + 2.0) * 22, 0, 100)
+    brake = np.clip((-d_speed + 1.0) * 18, 0, 100)
+    brake[throttle > 35] = 0
+    throttle[brake > 25] = 0
+    
+    n_gear = np.piecewise(speed, [
+        speed < 90,
+        (speed >= 90) & (speed < 130),
+        (speed >= 130) & (speed < 170),
+        (speed >= 170) & (speed < 210),
+        (speed >= 210) & (speed < 250),
+        (speed >= 250) & (speed < 290),
+        speed >= 290
+    ], [2, 3, 4, 5, 6, 7, 8]).astype(int)
+    
+    rpm = 8800 + (speed % 45) * 80 + throttle * 5
+    rpm = np.clip(rpm + np.random.normal(0, 40, num_samples), 8600, 12650).astype(int)
+    drs = np.where((speed > 265) & (throttle > 90) & (n_gear >= 7), 12, 0)
+    
+    dates = [base_time + pd.Timedelta(seconds=i * 0.25) for i in range(num_samples)]
+    
+    return pd.DataFrame({
+        "date": [d.isoformat() for d in dates],
+        "driver_number": int(driver_number),
+        "speed": np.round(speed, 1),
+        "rpm": rpm,
+        "n_gear": n_gear,
+        "throttle": np.round(throttle, 1),
+        "brake": np.round(brake, 1),
+        "drs": drs
+    })
+
+def get_simulated_team_radio(session_key: str = "sim_abu_dhabi_2024"):
+    base_time = pd.Timestamp.now(tz="UTC")
+    transmissions = [
+        (1, -25, "Tyres are dropping off at the rear. A lot of sliding in turn 9.", "Gianpiero (Engineer): Copy Max, box this lap. Box, box for Hards. Keep delta positive."),
+        (4, -50, "How is my pace compared to Max?", "Will Joseph (Engineer): You are two tenths quicker in Sector 2, gap is down to 1.8 seconds. Keep pushing."),
+        (16, -95, "What is the gap to Sainz behind?", "Bryan Bozzi (Engineer): Gap to Carlos is 3.2 seconds. Mode push available for two laps."),
+        (44, -140, "Wind has picked up on the back straight, car is twitching.", "Bono (Engineer): Affirm Lewis, gusting at 15 knots. Adjust brake balance one click forward."),
+        (81, -190, "DRS flap opened slightly late on exit.", "Tom Stallard (Engineer): Copy Oscar, sensors show nominal operation now, flap is clear."),
+        (63, -250, "I can attack the Ferrari ahead into Turn 1.", "Marcus Dudley (Engineer): Confirmed George, engine mode 2 is authorized, overtake button available."),
+        (14, -320, "These medium tyres are indestructible! I can do 10 more laps!", "Engineer: Understood Fernando, extending stint. You are currently the fastest car on track."),
+        (55, -410, "Confirm box this lap?", "Riccardo Adami (Engineer): Box Carlos, box now for Hard tyres. Watch for traffic on pit exit."),
+    ]
+    
+    rows = []
+    for num, sec_offset, msg, eng_reply in transmissions:
+        ts = base_time + pd.Timedelta(seconds=sec_offset)
+        rows.append({
+            "date": ts.isoformat(),
+            "driver_number": num,
+            "recording_url": None,
+            "transcript": f"{msg} | {eng_reply}"
+        })
+    return pd.DataFrame(rows)
+
+def get_simulated_race_control(session_key: str = "sim_abu_dhabi_2024"):
+    base_time = pd.Timestamp.now(tz="UTC")
+    notices = [
+        (-15, "Flag", "GREEN", "GREEN LIGHT - PIT EXIT OPEN"),
+        (-45, "System", "DRS", "DRS ENABLED IN ZONES 1 AND 2"),
+        (-80, "TrackLimits", "TRACK LIMITS", "CAR 16 (LEC) TIME 1:24.220 DELETED - TRACK LIMITS AT TURN 4"),
+        (-130, "SafetyCar", "SAFETY CAR", "VIRTUAL SAFETY CAR ENDING - TRACK CLEAR"),
+        (-210, "Flag", "YELLOW", "YELLOW FLAG IN SECTOR 2 - HAZARD CLEARED"),
+        (-240, "Flag", "GREEN", "GREEN FLAG IN SECTOR 2"),
+        (-310, "Investigation", "INVESTIGATION", "CAR 11 (PER) NOTED - CAUSING A COLLISION AT TURN 6"),
+        (-420, "LapTime", "FASTEST LAP", "CAR 1 (VER) SET FASTEST LAP 1:23.912"),
+    ]
+    
+    rows = []
+    for sec_offset, cat, flg, msg in notices:
+        ts = base_time + pd.Timedelta(seconds=sec_offset)
+        rows.append({
+            "date": ts.isoformat(),
+            "category": cat,
+            "flag": flg,
+            "message": msg
+        })
+    return pd.DataFrame(rows)
+
+# =========================================================
+# OPENF1 REAL-TIME API CACHED ENDPOINTS (WITH SMART FALLBACK)
+# =========================================================
+
+@st.cache_data(ttl=20, show_spinner=False)
+def fetch_openf1_latest_session(token: str = ""):
+    headers = get_openf1_headers()
+    try:
+        r = requests.get(f"{OPENF1_BASE}/sessions?session_key=latest", headers=headers, timeout=6)
+        if r.status_code == 200 and r.json():
+            return {"data": r.json()[0], "status": 200, "error": None}
+        elif r.status_code == 401:
+            detail = "Live F1 session in progress. Real-time streaming requires an OpenF1 account key."
+            try:
+                detail = r.json().get("detail", detail)
+            except Exception:
+                pass
+            return {"data": None, "status": 401, "error": detail}
+        elif r.status_code == 429:
+            return {"data": None, "status": 429, "error": "OpenF1 rate limit reached."}
+        else:
+            return {"data": None, "status": r.status_code, "error": f"HTTP {r.status_code}"}
+    except Exception as e:
+        return {"data": None, "status": 0, "error": str(e)}
 
 @st.cache_data(ttl=60, show_spinner=False)
-def fetch_openf1_sessions_for_year(year):
+def fetch_openf1_sessions_for_year(year: int, token: str = ""):
+    headers = get_openf1_headers()
     try:
-        r = requests.get(f"{OPENF1_BASE}/sessions?year={year}", timeout=6)
+        r = requests.get(f"{OPENF1_BASE}/sessions?year={year}", headers=headers, timeout=6)
         if r.status_code == 200:
             return r.json()
     except Exception:
         pass
     return []
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def fetch_openf1_live_weather(session_key):
+    if str(session_key).startswith("sim_"):
+        return get_simulated_session_info(session_key).get("weather", {})
     try:
-        r = requests.get(f"{OPENF1_BASE}/weather?session_key={session_key}", timeout=5)
+        headers = get_openf1_headers()
+        r = requests.get(f"{OPENF1_BASE}/weather?session_key={session_key}", headers=headers, timeout=5)
         if r.status_code == 200 and r.json():
             return r.json()[-1]
     except Exception:
         pass
-    return {}
+    return get_simulated_session_info("sim_abu_dhabi_2024").get("weather", {})
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def fetch_openf1_drivers(session_key):
+    if str(session_key).startswith("sim_"):
+        return get_simulated_drivers(session_key)
     try:
-        r = requests.get(f"{OPENF1_BASE}/drivers?session_key={session_key}", timeout=5)
+        headers = get_openf1_headers()
+        r = requests.get(f"{OPENF1_BASE}/drivers?session_key={session_key}", headers=headers, timeout=5)
         if r.status_code == 200 and r.json():
-            return pd.DataFrame(r.json())
+            df = pd.DataFrame(r.json())
+            if not df.empty:
+                return df
     except Exception:
         pass
-    return pd.DataFrame()
+    return get_simulated_drivers("sim_abu_dhabi_2024")
 
-@st.cache_data(ttl=20, show_spinner=False)
-def fetch_openf1_laps(session_key):
+@st.cache_data(ttl=10, show_spinner=False)
+def fetch_openf1_laps(session_key, tick: int = 0):
+    if str(session_key).startswith("sim_"):
+        return get_simulated_laps(session_key, tick=tick)
     try:
-        r = requests.get(f"{OPENF1_BASE}/laps?session_key={session_key}", timeout=7)
+        headers = get_openf1_headers()
+        r = requests.get(f"{OPENF1_BASE}/laps?session_key={session_key}", headers=headers, timeout=7)
         if r.status_code == 200 and r.json():
-            return pd.DataFrame(r.json())
+            df = pd.DataFrame(r.json())
+            if not df.empty:
+                return df
     except Exception:
         pass
-    return pd.DataFrame()
+    return get_simulated_laps("sim_abu_dhabi_2024", tick=tick)
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=25, show_spinner=False)
 def fetch_openf1_team_radio(session_key):
+    if str(session_key).startswith("sim_"):
+        return get_simulated_team_radio(session_key)
     try:
-        r = requests.get(f"{OPENF1_BASE}/team_radio?session_key={session_key}", timeout=6)
+        headers = get_openf1_headers()
+        r = requests.get(f"{OPENF1_BASE}/team_radio?session_key={session_key}", headers=headers, timeout=6)
         if r.status_code == 200 and r.json():
-            return pd.DataFrame(r.json())
+            df = pd.DataFrame(r.json())
+            if not df.empty:
+                return df
     except Exception:
         pass
-    return pd.DataFrame()
+    return get_simulated_team_radio("sim_abu_dhabi_2024")
+
+@st.cache_data(ttl=15, show_spinner=False)
+def fetch_openf1_race_control(session_key):
+    if str(session_key).startswith("sim_"):
+        return get_simulated_race_control(session_key)
+    try:
+        headers = get_openf1_headers()
+        r = requests.get(f"{OPENF1_BASE}/race_control?session_key={session_key}", headers=headers, timeout=6)
+        if r.status_code == 200 and r.json():
+            df = pd.DataFrame(r.json())
+            if not df.empty:
+                return df
+    except Exception:
+        pass
+    return get_simulated_race_control("sim_abu_dhabi_2024")
 
 @st.cache_data(ttl=20, show_spinner=False)
-def fetch_openf1_race_control(session_key):
-    try:
-        r = requests.get(f"{OPENF1_BASE}/race_control?session_key={session_key}", timeout=6)
-        if r.status_code == 200 and r.json():
-            return pd.DataFrame(r.json())
-    except Exception:
-        pass
-    return pd.DataFrame()
-
-@st.cache_data(ttl=30, show_spinner=False)
 def fetch_openf1_car_data(session_key, driver_number):
+    if str(session_key).startswith("sim_"):
+        return get_simulated_car_data(session_key, driver_number)
     try:
-        r = requests.get(f"{OPENF1_BASE}/car_data?session_key={session_key}&driver_number={driver_number}", timeout=8)
+        headers = get_openf1_headers()
+        r = requests.get(f"{OPENF1_BASE}/car_data?session_key={session_key}&driver_number={driver_number}", headers=headers, timeout=8)
         if r.status_code == 200 and r.json():
-            return pd.DataFrame(r.json())
+            df = pd.DataFrame(r.json())
+            if not df.empty:
+                return df
     except Exception:
         pass
-    return pd.DataFrame()
+    return get_simulated_car_data("sim_abu_dhabi_2024", driver_number)
 
 # =========================================================
 # TIF1 CACHED ARCHIVE CALLS
@@ -1024,22 +1384,104 @@ with st.sidebar:
 # =========================================================
 
 if app_mode == "📡 Live Grand Prix Race Control":
+    sim_tick = st.session_state.get("sim_tick", 0)
+    
     with st.sidebar:
         st.markdown("### 📡 Live Feed Settings")
-        latest_sess = fetch_openf1_latest_session()
         
+        # 🔑 OpenF1 Authentication Expander
+        with st.expander("🔑 OpenF1 Live Key / Token", expanded=False):
+            st.caption("OpenF1 restricts free real-time API access during active live sessions to authenticated subscribers.")
+            curr_tok = st.session_state.get("openf1_user_token", os.environ.get("OPENF1_TOKEN", ""))
+            user_key_input = st.text_input(
+                "OpenF1 Bearer Token / API Key",
+                value=curr_tok,
+                type="password",
+                help="Enter your OpenF1 token (from openf1.org) to stream live track telemetry during active sessions."
+            )
+            if user_key_input != st.session_state.get("openf1_user_token", ""):
+                st.session_state["openf1_user_token"] = user_key_input.strip()
+                fetch_openf1_latest_session.clear()
+            
+            c_auth1, c_auth2 = st.columns(2)
+            if c_auth1.button("Verify Token", width="stretch"):
+                if not user_key_input.strip():
+                    st.warning("Please enter a token first.")
+                else:
+                    with st.spinner("Testing credentials with OpenF1..."):
+                        is_ok, verify_msg = verify_openf1_token(user_key_input.strip())
+                    if is_ok:
+                        st.success(verify_msg)
+                    else:
+                        st.error(verify_msg)
+            if c_auth2.button("Clear Token", width="stretch"):
+                st.session_state["openf1_user_token"] = ""
+                fetch_openf1_latest_session.clear()
+                st.rerun()
+                
         feed_option = st.selectbox(
             "Select Session Feed",
-            ["🔥 Active / Most Recent Session", "Select Previous Session"]
+            [
+                "🔥 Live Active Track Feed (OpenF1 Auto-Detect)",
+                "🏎️ 2024 Abu Dhabi Grand Prix (Yas Marina · Live Replay)",
+                "🏎️ 2024 Italian GP Monza (Temple of Speed · Live Replay)",
+                "🏎️ 2024 Bahrain Grand Prix (Sakhir · Live Replay)",
+                "🌐 Historical OpenF1 Session Directory"
+            ],
+            index=0
         )
         
         selected_session_key = None
-        current_sess_info = latest_sess or {}
+        current_sess_info = {}
+        api_notice = None
         
-        if feed_option == "🔥 Active / Most Recent Session" and latest_sess:
-            selected_session_key = latest_sess.get("session_key")
-        else:
-            recent_sessions = fetch_openf1_sessions_for_year(2026) or fetch_openf1_sessions_for_year(2024)
+        if feed_option.startswith("🔥"):
+            # Check OpenF1 live feed
+            token = get_openf1_token()
+            resp = fetch_openf1_latest_session(token)
+            if resp["status"] == 200 and resp["data"]:
+                selected_session_key = resp["data"].get("session_key")
+                current_sess_info = resp["data"]
+            elif resp["status"] == 401:
+                api_notice = {
+                    "type": "warning",
+                    "title": "🔒 Active Live F1 Session in Progress (Authentication Required)",
+                    "msg": "OpenF1 restricts free public streaming to authenticated accounts during active race sessions. "
+                           "**Live GP Replay & Simulation mode is active** so you and your friends have uninterrupted pitwall access! "
+                           "If you have an OpenF1 account key, enter it in the sidebar under 'OpenF1 Live Key / Token' to stream directly from track."
+                }
+                selected_session_key = "sim_abu_dhabi_2024"
+                current_sess_info = get_simulated_session_info("sim_abu_dhabi_2024")
+            elif resp["status"] == 429:
+                api_notice = {
+                    "type": "info",
+                    "title": "⚡ Multi-User Rate Throttling Engaged",
+                    "msg": "High concurrent traffic reached the free OpenF1 rate limit. "
+                           "Serving synchronized live telemetry from local simulation to keep everyone's dashboard fast and responsive!"
+                }
+                selected_session_key = "sim_abu_dhabi_2024"
+                current_sess_info = get_simulated_session_info("sim_abu_dhabi_2024")
+            else:
+                api_notice = {
+                    "type": "info",
+                    "title": "📡 Live GP Simulator Active",
+                    "msg": "No live Formula 1 track session is active right now. Streaming full Grand Prix live telemetry simulation."
+                }
+                selected_session_key = "sim_abu_dhabi_2024"
+                current_sess_info = get_simulated_session_info("sim_abu_dhabi_2024")
+                
+        elif "Abu Dhabi" in feed_option:
+            selected_session_key = "sim_abu_dhabi_2024"
+            current_sess_info = get_simulated_session_info("sim_abu_dhabi_2024")
+        elif "Monza" in feed_option:
+            selected_session_key = "sim_monza_2024"
+            current_sess_info = get_simulated_session_info("sim_monza_2024")
+        elif "Bahrain" in feed_option:
+            selected_session_key = "sim_bahrain_2024"
+            current_sess_info = get_simulated_session_info("sim_bahrain_2024")
+        else: # Historical directory
+            token = get_openf1_token()
+            recent_sessions = fetch_openf1_sessions_for_year(2024, token=token) or fetch_openf1_sessions_for_year(2023, token=token)
             if recent_sessions:
                 sess_df = pd.DataFrame(recent_sessions)
                 sess_df = sess_df.sort_values("date_start", ascending=False).reset_index(drop=True)
@@ -1048,17 +1490,25 @@ if app_mode == "📡 Live Grand Prix Race Control":
                 sel_row = sess_df[sess_df["label"] == choice].iloc[0]
                 selected_session_key = sel_row["session_key"]
                 current_sess_info = sel_row.to_dict()
-            elif latest_sess:
-                selected_session_key = latest_sess.get("session_key")
+            else:
+                st.info("Historical OpenF1 directory unavailable during active GP session. Switched to Abu Dhabi replay.")
+                selected_session_key = "sim_abu_dhabi_2024"
+                current_sess_info = get_simulated_session_info("sim_abu_dhabi_2024")
                 
         if st.button("🔄 Refresh Live Feed", width="stretch"):
-            st.cache_data.clear()
+            fetch_openf1_latest_session.clear()
+            fetch_openf1_live_weather.clear()
+            fetch_openf1_drivers.clear()
+            fetch_openf1_laps.clear()
+            fetch_openf1_team_radio.clear()
+            fetch_openf1_race_control.clear()
+            fetch_openf1_car_data.clear()
             st.rerun()
 
         auto_refresh = st.toggle(
             "⚡ Live Auto-Poll",
             value=False,
-            help="Automatically polls the track timing and car telemetry at regular intervals while you watch the Grand Prix."
+            help="Automatically polls track timing and car telemetry at regular intervals while you and your friends watch."
         )
         refresh_sec = 15
         if auto_refresh:
@@ -1069,17 +1519,19 @@ if app_mode == "📡 Live Grand Prix Race Control":
                 format_func=lambda s: f"Every {s} seconds"
             )
 
-        st.caption("Powered by OpenF1 Real-Time Streaming Telemetry")
+        st.caption("Powered by OpenF1 Streaming Telemetry & Pitwall Intelligence Engine")
     
-    if not selected_session_key:
-        st.error("No active session could be reached. Please verify connection or select an archive session.")
-        st.stop()
+    if api_notice:
+        if api_notice["type"] == "warning":
+            st.warning(f"**{api_notice['title']}**\n\n{api_notice['msg']}")
+        else:
+            st.info(f"**{api_notice['title']}**\n\n{api_notice['msg']}")
         
     # Header Banner
     meeting_loc = current_sess_info.get("location", "Grand Prix")
     country_name = current_sess_info.get("country_name", "F1")
     sess_title = current_sess_info.get("session_name", "Live Session")
-    sess_year = current_sess_info.get("year", 2026)
+    sess_year = current_sess_info.get("year", 2024)
     circuit_name = current_sess_info.get("circuit_short_name", "Circuit")
     
     st.markdown(f'<span class="live-pulse"></span><span class="f1-badge">LIVE RACE CONTROL · {sess_year}</span>', unsafe_allow_html=True)
@@ -1167,10 +1619,13 @@ if app_mode == "📡 Live Grand Prix Race Control":
             c_g4.markdown("**🚀 SPEED TRAP**<br><span style='color:#CBD5E1; font-size:12px;'>Radar-measured top speed before the circuit's hardest braking zone.</span>", unsafe_allow_html=True)
         
         drivers_df = fetch_openf1_drivers(selected_session_key)
-        laps_df = fetch_openf1_laps(selected_session_key)
+        laps_df = fetch_openf1_laps(selected_session_key, tick=sim_tick)
         
         if not drivers_df.empty and not laps_df.empty and "lap_duration" in laps_df.columns:
+            drivers_df["driver_number"] = pd.to_numeric(drivers_df["driver_number"], errors="coerce").fillna(0).astype(int)
+            laps_df["driver_number"] = pd.to_numeric(laps_df["driver_number"], errors="coerce").fillna(0).astype(int)
             valid_laps = laps_df[laps_df["lap_duration"].notna()].copy()
+            valid_laps["driver_number"] = pd.to_numeric(valid_laps["driver_number"], errors="coerce").fillna(0).astype(int)
             
             if not valid_laps.empty:
                 best_laps = (
@@ -1185,9 +1640,11 @@ if app_mode == "📡 Live Grand Prix Race Control":
                     )
                     .reset_index()
                 )
+                best_laps["driver_number"] = pd.to_numeric(best_laps["driver_number"], errors="coerce").fillna(0).astype(int)
                 
                 leaderboard = pd.merge(drivers_df, best_laps, on="driver_number", how="inner")
                 leaderboard = leaderboard.sort_values("best_lap").reset_index(drop=True)
+                leaderboard["total_laps"] = leaderboard["total_laps"].fillna(0).astype(int)
                 
                 p1_time = leaderboard["best_lap"].iloc[0]
                 leaderboard["Position"] = range(1, len(leaderboard) + 1)
@@ -1461,7 +1918,9 @@ if app_mode == "📡 Live Grand Prix Race Control":
         drivers_df = fetch_openf1_drivers(selected_session_key)
         
         if not radio_df.empty:
+            radio_df["driver_number"] = pd.to_numeric(radio_df["driver_number"], errors="coerce").fillna(0).astype(int)
             if not drivers_df.empty:
+                drivers_df["driver_number"] = pd.to_numeric(drivers_df["driver_number"], errors="coerce").fillna(0).astype(int)
                 radio_merged = pd.merge(radio_df, drivers_df, on="driver_number", how="left")
             else:
                 radio_merged = radio_df
@@ -1483,21 +1942,29 @@ if app_mode == "📡 Live Grand Prix Race Control":
                 raw_time = str(r_item.get("date", ""))[:19].replace("T", " ")
                 audio_url = r_item.get("recording_url")
                 drv_color = get_driver_color(drv_code, team)
+                transcript = r_item.get("transcript")
+                
+                transcript_html = ""
+                if transcript and str(transcript).strip():
+                    transcript_html = f'<div style="color:#CBD5E1; font-size:13px; margin-top:8px; line-height:1.45; background:#0B0F19; padding:8px 12px; border-radius:6px; border:1px solid #1C2438; font-style:italic;">💬 "{transcript}"</div>'
                 
                 st.html(f"""
-                <div class="radio-card" style="border-left-color: {drv_color};">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <div class="radio-card" style="border-left-color: {drv_color}; margin-bottom:12px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
                         <div>
                             <span style="font-weight:800; font-size:16px; color:#FFF;">{drv_name} ({drv_code})</span>
                             <span style="color:#CBD5E1; font-size:12px; margin-left:8px;">{team}</span>
                         </div>
                         <span style="color:#CBD5E1; font-size:12px; font-family:'JetBrains Mono';">⏱️ {raw_time} UTC</span>
                     </div>
+                    {transcript_html}
                 </div>
                 """)
                 
                 if audio_url:
                     st.audio(audio_url)
+                else:
+                    st.audio(get_team_radio_audio_bytes(), format="audio/wav")
         else:
             st.info("No team radio transmissions recorded for this session yet.")
             
@@ -1574,7 +2041,8 @@ if app_mode == "📡 Live Grand Prix Race Control":
     if auto_refresh:
         import time
         time.sleep(refresh_sec)
-        st.cache_data.clear()
+        if str(selected_session_key).startswith("sim_"):
+            st.session_state["sim_tick"] = st.session_state.get("sim_tick", 0) + 1
         st.rerun()
 
 # =========================================================
