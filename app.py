@@ -649,6 +649,17 @@ def get_compound_badge_html(compound, tyre_life=None):
     return f'<span style="background:{bg}; color:{fg}; font-weight:800; font-size:10px; padding:2px 7px; border-radius:4px; letter-spacing:0.5px; display:inline-block;">{cmp}{life_txt}</span>'
 
 def get_local_ip():
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.5)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        if ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
     for iface in ["en0", "en1"]:
         try:
             ip = subprocess.check_output(["ipconfig", "getifaddr", iface], timeout=1).decode().strip()
